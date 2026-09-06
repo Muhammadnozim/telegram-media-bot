@@ -25,10 +25,10 @@ URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".webm", ".mkv"}
 AUDIO_EXTENSIONS = {".mp3", ".m4a", ".opus", ".ogg", ".wav", ".aac", ".flac"}
 
-MAX_FILE_MB = int(os.getenv("MAX_FILE_MB", "40000"))
+MAX_FILE_MB = int(os.getenv("MAX_FILE_MB", "45"))
 MAX_FILE_BYTES = MAX_FILE_MB * 1024 * 1024
 MAX_CONCURRENT_DOWNLOADS = int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "2"))
-DOWNLOAD_TIMEOUT_SECONDS = int(os.getenv("DOWNLOAD_TIMEOUT_SECONDS", "1"))
+DOWNLOAD_TIMEOUT_SECONDS = int(os.getenv("DOWNLOAD_TIMEOUT_SECONDS", "300"))
 
 DOWNLOAD_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 
@@ -157,7 +157,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "Ishlatish: bitta xabarda bitta link yuboring.\n\n"
         "Qo'llab-quvvatlanadi: YouTube, Instagram, TikTok, Facebook, Pinterest va "
         "yt-dlp tanigan ko'p ommaviy saytlar. Agar sayt qo'llab-quvvatlanmasa yoki "
-        f"fayl {40000} MB dan katta bo'lsa, bot xabar beradi."
+        f"fayl {MAX_FILE_MB} MB dan katta bo'lsa, bot xabar beradi."
     )
 
 
@@ -263,6 +263,7 @@ if __name__ == "__main__":
     while True:
         try:
             main()
+            break
         except Conflict:
             LOGGER.warning("Telegram polling conflict. 20 soniyadan keyin qayta uriniladi.")
             time.sleep(20)
