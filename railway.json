@@ -7,6 +7,8 @@
   "deploy": {
     "startCommand": "python bot.py",
     "restartPolicyType": "ALWAYS",
-    "restartPolicyMaxRetries": 10
+    "restartPolicyMaxRetries": 10,
+    "overlapSeconds": "0",
+    "drainingSeconds": "0"
   }
 }

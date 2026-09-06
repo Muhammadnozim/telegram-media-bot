@@ -4,13 +4,14 @@ import os
 import re
 import shutil
 import tempfile
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.constants import ChatAction
-from telegram.error import TelegramError
+from telegram.error import Conflict, TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError
@@ -255,8 +256,13 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     LOGGER.info("Bot ishga tushdi.")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
 if __name__ == "__main__":
-    main()
+    while True:
+        try:
+            main()
+        except Conflict:
+            LOGGER.warning("Telegram polling conflict. 20 soniyadan keyin qayta uriniladi.")
+            time.sleep(20)
