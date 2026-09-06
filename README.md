@@ -24,7 +24,9 @@ pip install -r requirements.txt
 
 ```env
 BOT_TOKEN=123456789:YOUR_REAL_TOKEN
+ADMIN_IDS=123456789
 MAX_FILE_MB=45
+MAX_DAILY_DOWNLOADS=5
 ```
 
 5. Botni ishga tushiring:
@@ -39,11 +41,31 @@ python bot.py
 
 `MAX_CONCURRENT_DOWNLOADS` - bir vaqtda nechta yuklashga ruxsat berilishi. Standart qiymat: `2`.
 
+`MAX_DAILY_DOWNLOADS` - oddiy foydalanuvchi kuniga nechta media yuklay olishi. Standart qiymat: `5`. `0` berilsa limit o'chadi.
+
+`ADMIN_IDS` - admin Telegram ID raqamlari. Bir nechta admin bo'lsa vergul bilan yozing: `123,456`.
+
 `DOWNLOAD_TIMEOUT_SECONDS` - bitta yuklash uchun vaqt chegarasi. Standart qiymat: `300`.
+
+`LIMIT_TIMEZONE` - kunlik limit qaysi vaqt zonasi bo'yicha yangilanishi. Standart qiymat: `Asia/Tashkent`.
 
 ## Foydalanish
 
 Telegramda botga `/start` yuboring, keyin bitta media link yuboring. Bot linkdan videoni yuklab, fayl sifatida qaytaradi.
+
+## Admin komandalar
+
+Avval Telegramda botga `/id` yuboring va chiqqan raqamni Railway `ADMIN_IDS` variable ichiga qo'ying.
+
+`/admin` - admin panel.
+
+`/stats` - bugungi statistika.
+
+`/users` - oxirgi foydalanuvchilar.
+
+`/setlimit 5` - kunlik limitni o'zgartirish. `0` = limitsiz.
+
+`/resetlimit` - bugungi ishlatilgan limitlarni nol qilish.
 
 ## Hosting
 
