@@ -29,6 +29,12 @@ LOGGER = logging.getLogger(__name__)
 URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".webm", ".mkv"}
 AUDIO_EXTENSIONS = {".mp3", ".m4a", ".opus", ".ogg", ".wav", ".aac", ".flac"}
+SPOTIFY_HOSTS = {"spotify.com", "open.spotify.com", "www.spotify.com", "spotify.link", "spotify.app.link"}
+SPOTIFY_UNSUPPORTED_TEXT = (
+    "Spotify linkidan musiqa yoki video faylini yuklab bera olmayman.\n\n"
+    "Spotify kontenti yuklab olish yoki stream ripping uchun ruxsat bermaydi. "
+    "Spotify'da tinglang yoki yuklashga ruxsatli boshqa ommaviy media link yuboring."
+)
 
 
 def get_int_env(name: str, default: int) -> int:
@@ -289,6 +295,12 @@ def extract_first_url(text: str | None) -> str | None:
         return None
 
     return url
+
+
+def is_spotify_url(url: str) -> bool:
+    parsed = urlparse(url)
+    host = parsed.netloc.lower().split(":", 1)[0]
+    return host in SPOTIFY_HOSTS or host.endswith(".spotify.com")
 
 
 def first_command(text: str | None) -> str:
@@ -737,6 +749,11 @@ async def process_url_download(
     message = update.effective_message
     chat = update.effective_chat
     if not message or not chat:
+        return
+
+    if is_spotify_url(url):
+        await track_user(update)
+        await message.reply_text(SPOTIFY_UNSUPPORTED_TEXT)
         return
 
     block_message = await limit_block_message(update)

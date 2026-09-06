@@ -4,6 +4,8 @@ Bu bot Telegramga yuborilgan ommaviy media linklarini yuklab, foydalanuvchiga qa
 
 Qo'llab-quvvatlanadigan manbalar: YouTube, Instagram, TikTok, Facebook, Pinterest va `yt-dlp` qo'llab-quvvatlaydigan ko'p boshqa ommaviy saytlar.
 
+Spotify musiqa yoki video fayllarini yuklab bermaydi, chunki Spotify kontentini yuklab olish va stream ripping ruxsat etilmaydi.
+
 ## Muhim eslatma
 
 Botdan faqat o'zingizga tegishli yoki yuklab olishga ruxsat berilgan kontent uchun foydalaning. Bot private kontent, DRM himoyasi yoki kirish cheklovlarini aylanib o'tish uchun mo'ljallanmagan.
