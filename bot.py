@@ -249,6 +249,7 @@ def main() -> None:
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         level=os.getenv("LOG_LEVEL", "INFO").upper(),
     )
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", start))
