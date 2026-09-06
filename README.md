@@ -27,6 +27,8 @@ BOT_TOKEN=123456789:YOUR_REAL_TOKEN
 ADMIN_IDS=123456789
 MAX_FILE_MB=45
 MAX_DAILY_DOWNLOADS=5
+AUDIO_FORMAT=mp3
+AUDIO_QUALITY_KBPS=192
 ```
 
 5. Botni ishga tushiring:
@@ -47,11 +49,21 @@ python bot.py
 
 `DOWNLOAD_TIMEOUT_SECONDS` - bitta yuklash uchun vaqt chegarasi. Standart qiymat: `300`.
 
+`AUDIO_FORMAT` - audio yuklash formati. Standart qiymat: `mp3`. Qo'llab-quvvatlanadi: `mp3`, `m4a`, `opus`.
+
+`AUDIO_QUALITY_KBPS` - audio sifati. Standart qiymat: `192`.
+
 `LIMIT_TIMEZONE` - kunlik limit qaysi vaqt zonasi bo'yicha yangilanishi. Standart qiymat: `Asia/Tashkent`.
 
 ## Foydalanish
 
 Telegramda botga `/start` yuboring, keyin bitta media link yuboring. Bot linkdan videoni yuklab, fayl sifatida qaytaradi.
+
+Video yuborilgandan keyin tagida `Musiqasini yuklash` tugmasi chiqadi. Tugma bosilsa, bot o'sha videoning ovozini audio qilib yuboradi.
+
+Faqat audio kerak bo'lsa, `/audio link` yoki `/mp3 link` yuboring.
+
+Telegramga video fayl yuborib, caption joyiga `/audio` yozsangiz, bot yuklangan videodan ham musiqasini ajratadi.
 
 ## Admin komandalar
 

@@ -3,7 +3,9 @@ import json
 import logging
 import os
 import re
+import secrets
 import shutil
+import subprocess
 import tempfile
 import time
 from datetime import datetime, timezone
@@ -12,10 +14,10 @@ from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dotenv import load_dotenv
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
 from telegram.error import Conflict, TelegramError
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError
 
@@ -53,17 +55,30 @@ def parse_admin_ids() -> set[int]:
     return admin_ids
 
 
+def get_audio_format() -> str:
+    audio_format = os.getenv("AUDIO_FORMAT", "mp3").strip().lower()
+    if audio_format in {"mp3", "m4a", "opus"}:
+        return audio_format
+
+    LOGGER.warning("AUDIO_FORMAT noto'g'ri berilgan. mp3 ishlatiladi.")
+    return "mp3"
+
+
 MAX_FILE_MB = max(1, get_int_env("MAX_FILE_MB", 45))
 MAX_FILE_BYTES = MAX_FILE_MB * 1024 * 1024
 MAX_CONCURRENT_DOWNLOADS = max(1, get_int_env("MAX_CONCURRENT_DOWNLOADS", 2))
 DOWNLOAD_TIMEOUT_SECONDS = max(1, get_int_env("DOWNLOAD_TIMEOUT_SECONDS", 300))
 MAX_DAILY_DOWNLOADS = get_int_env("MAX_DAILY_DOWNLOADS", 5)
+AUDIO_FORMAT = get_audio_format()
+AUDIO_QUALITY_KBPS = min(320, max(64, get_int_env("AUDIO_QUALITY_KBPS", 192)))
 ADMIN_IDS = parse_admin_ids()
 LIMIT_TIMEZONE = os.getenv("LIMIT_TIMEZONE", "Asia/Tashkent")
 STATE_FILE = Path(os.getenv("STATE_FILE", "bot_state.json"))
 
 DOWNLOAD_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 STATE_LOCK = asyncio.Lock()
+AUDIO_COMMANDS = {"/audio", "/mp3", "/music"}
+MAX_AUDIO_REQUESTS = 200
 
 
 def now_iso() -> str:
@@ -80,7 +95,7 @@ def today_key() -> str:
 
 
 def empty_state() -> dict:
-    return {"users": {}, "daily_usage": {}, "settings": {}}
+    return {"users": {}, "daily_usage": {}, "settings": {}, "audio_requests": {}}
 
 
 def normalize_state(state: object) -> dict:
@@ -89,6 +104,7 @@ def normalize_state(state: object) -> dict:
     state.setdefault("users", {})
     state.setdefault("daily_usage", {})
     state.setdefault("settings", {})
+    state.setdefault("audio_requests", {})
     return state
 
 
@@ -165,6 +181,40 @@ def user_label(user_id: str, record: dict | None = None) -> str:
     return user_id
 
 
+def prune_audio_requests(requests: dict) -> None:
+    if len(requests) <= MAX_AUDIO_REQUESTS:
+        return
+
+    ordered_ids = sorted(requests, key=lambda request_id: requests[request_id].get("created_at", ""))
+    for request_id in ordered_ids[: len(requests) - MAX_AUDIO_REQUESTS]:
+        requests.pop(request_id, None)
+
+
+def remember_audio_request(state: dict, update: Update, url: str) -> str:
+    request_id = secrets.token_urlsafe(8)
+    user = update.effective_user
+    requests = state.setdefault("audio_requests", {})
+    requests[request_id] = {
+        "url": url,
+        "user_id": user.id if user else None,
+        "created_at": now_iso(),
+    }
+    prune_audio_requests(requests)
+    return request_id
+
+
+async def build_audio_button(update: Update, url: str) -> InlineKeyboardMarkup:
+    async with STATE_LOCK:
+        state = load_state()
+        upsert_user(state, update)
+        request_id = remember_audio_request(state, update, url)
+        save_state(state)
+
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("Musiqasini yuklash", callback_data=f"audio:{request_id}")]]
+    )
+
+
 async def track_user(update: Update) -> None:
     async with STATE_LOCK:
         state = load_state()
@@ -239,6 +289,35 @@ def extract_first_url(text: str | None) -> str | None:
         return None
 
     return url
+
+
+def first_command(text: str | None) -> str:
+    if not text:
+        return ""
+
+    command = text.strip().split(maxsplit=1)[0].split("@", 1)[0].lower()
+    return command
+
+
+def safe_filename(name: str | None, default: str) -> str:
+    if not name:
+        return default
+
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._")
+    return cleaned or default
+
+
+def get_video_attachment(message):
+    if message.video:
+        filename = safe_filename(message.video.file_name, f"{message.video.file_unique_id}.mp4")
+        return message.video, filename
+
+    document = message.document
+    if document and (document.mime_type or "").startswith("video/"):
+        filename = safe_filename(document.file_name, f"{document.file_unique_id}.mp4")
+        return document, filename
+
+    return None, None
 
 
 def format_duration(seconds: int | float | None) -> str | None:
@@ -322,9 +401,84 @@ def download_media(url: str, temp_dir: Path) -> tuple[dict, Path]:
         return info, pick_downloaded_file(temp_dir, info, ydl)
 
 
-async def keep_chat_action(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> None:
+def download_audio(url: str, temp_dir: Path) -> tuple[dict, Path]:
+    output_template = str(temp_dir / "%(title).80s-%(id)s.%(ext)s")
+    ydl_opts = {
+        "outtmpl": output_template,
+        "format": "bestaudio/best",
+        "max_filesize": MAX_FILE_BYTES,
+        "noplaylist": True,
+        "no_warnings": True,
+        "overwrites": True,
+        "quiet": True,
+        "retries": 2,
+        "fragment_retries": 2,
+        "restrictfilenames": True,
+        "socket_timeout": 30,
+        "postprocessors": [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": AUDIO_FORMAT,
+                "preferredquality": str(AUDIO_QUALITY_KBPS),
+            }
+        ],
+    }
+
+    with YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+
+        if info.get("_type") == "playlist":
+            entries = [entry for entry in info.get("entries", []) if entry]
+            if not entries:
+                raise DownloadError("Playlist ichida yuklanadigan audio topilmadi.")
+            info = entries[0]
+
+        return info, pick_downloaded_file(temp_dir, info, ydl)
+
+
+def ffmpeg_audio_args() -> tuple[list[str], str]:
+    bitrate = f"{AUDIO_QUALITY_KBPS}k"
+    if AUDIO_FORMAT == "m4a":
+        return ["-codec:a", "aac", "-b:a", bitrate], ".m4a"
+    if AUDIO_FORMAT == "opus":
+        return ["-codec:a", "libopus", "-b:a", bitrate], ".opus"
+    return ["-codec:a", "libmp3lame", "-b:a", bitrate], ".mp3"
+
+
+def extract_audio_from_video(input_path: Path, temp_dir: Path) -> Path:
+    audio_args, extension = ffmpeg_audio_args()
+    output_path = temp_dir / f"{safe_filename(input_path.stem, 'audio')}{extension}"
+    command = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(input_path),
+        "-vn",
+        *audio_args,
+        str(output_path),
+    ]
+
+    completed = subprocess.run(
+        command,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=DOWNLOAD_TIMEOUT_SECONDS,
+    )
+    if completed.returncode != 0 or not output_path.exists():
+        LOGGER.warning("ffmpeg audio extraction failed: %s", completed.stderr[-1000:])
+        raise RuntimeError("Videodan musiqa ajratib bo'lmadi.")
+
+    return output_path
+
+
+async def keep_chat_action(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    action: str = ChatAction.UPLOAD_VIDEO,
+) -> None:
     while True:
-        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_VIDEO)
+        await context.bot.send_chat_action(chat_id=chat_id, action=action)
         await asyncio.sleep(4)
 
 
@@ -337,6 +491,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await message.reply_text(
         "Salom! Menga Instagram, Facebook, YouTube, Pinterest, TikTok yoki boshqa "
         "ommaviy media linkini yuboring. Men videoni yuklab, shu yerga qaytaraman.\n\n"
+        "Video tagidagi Musiqasini yuklash tugmasi orqali ovozini MP3 qilib olasiz. "
+        "Faqat musiqa kerak bo'lsa: /audio link\n\n"
         "Eslatma: faqat o'zingizga tegishli yoki yuklashga ruxsat berilgan kontentdan foydalaning."
     )
 
@@ -352,6 +508,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "Qo'llab-quvvatlanadi: YouTube, Instagram, TikTok, Facebook, Pinterest va "
         "yt-dlp tanigan ko'p ommaviy saytlar. Agar sayt qo'llab-quvvatlanmasa yoki "
         f"fayl {MAX_FILE_MB} MB dan katta bo'lsa, bot xabar beradi.\n\n"
+        "Video tagidagi Musiqasini yuklash tugmasi audioni MP3 qilib beradi.\n"
+        "Faqat audio: /audio link\n"
+        "Yuklangan videodan audio: videoni /audio caption bilan yuboring.\n"
         "Limitni ko'rish: /limit\n"
         "Telegram ID olish: /id"
     )
@@ -530,15 +689,54 @@ async def reset_limit_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     await message.reply_text(result_text)
 
 
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def send_downloaded_file(
+    message,
+    file_path: Path,
+    caption: str,
+    *,
+    force_audio: bool = False,
+    reply_markup: InlineKeyboardMarkup | None = None,
+) -> None:
+    suffix = file_path.suffix.lower()
+
+    with file_path.open("rb") as media_file:
+        if force_audio or suffix in AUDIO_EXTENSIONS:
+            await message.reply_audio(
+                audio=media_file,
+                caption=caption,
+                reply_markup=reply_markup,
+                read_timeout=180,
+                write_timeout=180,
+            )
+        elif suffix in VIDEO_EXTENSIONS:
+            await message.reply_video(
+                video=media_file,
+                caption=caption,
+                reply_markup=reply_markup,
+                supports_streaming=True,
+                read_timeout=180,
+                write_timeout=180,
+            )
+        else:
+            await message.reply_document(
+                document=media_file,
+                caption=caption,
+                reply_markup=reply_markup,
+                read_timeout=180,
+                write_timeout=180,
+            )
+
+
+async def process_url_download(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    url: str,
+    *,
+    audio_only: bool = False,
+) -> None:
     message = update.effective_message
     chat = update.effective_chat
     if not message or not chat:
-        return
-
-    url = extract_first_url(message.text or message.caption)
-    if not url:
-        await message.reply_text("Menga video yoki media sahifasining linkini yuboring.")
         return
 
     block_message = await limit_block_message(update)
@@ -547,13 +745,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     async with DOWNLOAD_SEMAPHORE:
-        status_message = await message.reply_text("Yuklab olyapman, biroz kuting...")
+        status_text = "Musiqasini yuklab olyapman, biroz kuting..." if audio_only else "Yuklab olyapman, biroz kuting..."
+        status_message = await message.reply_text(status_text)
         temp_dir = Path(tempfile.mkdtemp(prefix="telegram-downloader-"))
-        chat_action_task = asyncio.create_task(keep_chat_action(context, chat.id))
+        action = ChatAction.UPLOAD_DOCUMENT if audio_only else ChatAction.UPLOAD_VIDEO
+        chat_action_task = asyncio.create_task(keep_chat_action(context, chat.id, action))
 
         try:
+            download_func = download_audio if audio_only else download_media
             info, file_path = await asyncio.wait_for(
-                asyncio.to_thread(download_media, url, temp_dir),
+                asyncio.to_thread(download_func, url, temp_dir),
                 timeout=DOWNLOAD_TIMEOUT_SECONDS,
             )
 
@@ -566,32 +767,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 return
 
             caption = build_caption(info)
-            suffix = file_path.suffix.lower()
+            reply_markup = None
+            if not audio_only and file_path.suffix.lower() in VIDEO_EXTENSIONS:
+                reply_markup = await build_audio_button(update, url)
 
-            with file_path.open("rb") as media_file:
-                if suffix in VIDEO_EXTENSIONS:
-                    await message.reply_video(
-                        video=media_file,
-                        caption=caption,
-                        supports_streaming=True,
-                        read_timeout=180,
-                        write_timeout=180,
-                    )
-                elif suffix in AUDIO_EXTENSIONS:
-                    await message.reply_audio(
-                        audio=media_file,
-                        caption=caption,
-                        read_timeout=180,
-                        write_timeout=180,
-                    )
-                else:
-                    await message.reply_document(
-                        document=media_file,
-                        caption=caption,
-                        read_timeout=180,
-                        write_timeout=180,
-                    )
-
+            await send_downloaded_file(
+                message,
+                file_path,
+                caption,
+                force_audio=audio_only,
+                reply_markup=reply_markup,
+            )
             await mark_successful_download(update)
             await status_message.delete()
 
@@ -615,6 +801,140 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+async def process_uploaded_video_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    chat = update.effective_chat
+    if not message or not chat:
+        return
+
+    attachment, filename = get_video_attachment(message)
+    if not attachment or not filename:
+        await message.reply_text("Videodan musiqa ajratish uchun video fayl yuboring yoki /audio link yozing.")
+        return
+
+    block_message = await limit_block_message(update)
+    if block_message:
+        await message.reply_text(block_message)
+        return
+
+    if attachment.file_size and attachment.file_size > MAX_FILE_BYTES:
+        await message.reply_text(
+            f"Video juda katta: {attachment.file_size / 1024 / 1024:.1f} MB. "
+            f"Hozirgi limit: {MAX_FILE_MB} MB."
+        )
+        return
+
+    async with DOWNLOAD_SEMAPHORE:
+        status_message = await message.reply_text("Videodan musiqasini ajratyapman, biroz kuting...")
+        temp_dir = Path(tempfile.mkdtemp(prefix="telegram-audio-"))
+        chat_action_task = asyncio.create_task(keep_chat_action(context, chat.id, ChatAction.UPLOAD_DOCUMENT))
+
+        try:
+            input_path = temp_dir / filename
+            telegram_file = await attachment.get_file()
+            await telegram_file.download_to_drive(custom_path=str(input_path))
+
+            audio_path = await asyncio.wait_for(
+                asyncio.to_thread(extract_audio_from_video, input_path, temp_dir),
+                timeout=DOWNLOAD_TIMEOUT_SECONDS,
+            )
+
+            file_size = audio_path.stat().st_size
+            if file_size > MAX_FILE_BYTES:
+                await status_message.edit_text(
+                    f"Audio juda katta: {file_size / 1024 / 1024:.1f} MB. "
+                    f"Hozirgi limit: {MAX_FILE_MB} MB."
+                )
+                return
+
+            caption = f"{Path(filename).stem[:160]}\nAudio"
+            await send_downloaded_file(message, audio_path, caption, force_audio=True)
+            await mark_successful_download(update)
+            await status_message.delete()
+
+        except asyncio.TimeoutError:
+            await status_message.edit_text("Audio ajratish juda uzoq davom etdi. Qisqaroq video yuboring.")
+        except TelegramError as exc:
+            LOGGER.warning("Telegram file/audio failed: %s", exc)
+            await status_message.edit_text("Videoni olish yoki audioni yuborishda xatolik bo'ldi.")
+        except Exception:
+            LOGGER.exception("Unexpected error while extracting uploaded video audio")
+            await status_message.edit_text("Videodan musiqa ajratib bo'lmadi.")
+        finally:
+            chat_action_task.cancel()
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+async def audio_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    if not message:
+        return
+
+    url = extract_first_url(" ".join(context.args) or message.text or message.caption)
+    if url:
+        await process_url_download(update, context, url, audio_only=True)
+        return
+
+    await process_uploaded_video_audio(update, context)
+
+
+async def audio_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    user = update.effective_user
+    if not query or not query.data:
+        return
+
+    request_id = query.data.split(":", 1)[1]
+    async with STATE_LOCK:
+        state = load_state()
+        upsert_user(state, update)
+        record = state.setdefault("audio_requests", {}).get(request_id)
+        save_state(state)
+
+    if not record:
+        await query.answer("Bu tugma eskirgan. Linkni qayta yuboring.", show_alert=True)
+        return
+
+    requester_id = record.get("user_id")
+    if requester_id and user and requester_id != user.id and not is_admin(user.id):
+        await query.answer("Bu tugma link yuborgan odam uchun.", show_alert=True)
+        return
+
+    url = record.get("url")
+    if not isinstance(url, str) or not url:
+        await query.answer("Link topilmadi. Qayta yuboring.", show_alert=True)
+        return
+
+    await query.answer("Musiqa yuklanmoqda...")
+    await process_url_download(update, context, url, audio_only=True)
+
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    if not message:
+        return
+
+    url = extract_first_url(message.text or message.caption)
+    if not url:
+        await track_user(update)
+        await message.reply_text("Menga video yoki media sahifasining linkini yuboring.")
+        return
+
+    await process_url_download(update, context, url)
+
+
+async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    if not message:
+        return
+
+    if first_command(message.caption) in AUDIO_COMMANDS:
+        await process_uploaded_video_audio(update, context)
+        return
+
+    await track_user(update)
+
+
 def main() -> None:
     token = os.getenv("BOT_TOKEN")
     if not token:
@@ -629,6 +949,7 @@ def main() -> None:
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler(["audio", "mp3", "music"], audio_command))
     app.add_handler(CommandHandler("id", id_command))
     app.add_handler(CommandHandler("limit", limit_command))
     app.add_handler(CommandHandler("admin", admin_command))
@@ -636,6 +957,8 @@ def main() -> None:
     app.add_handler(CommandHandler("users", users_command))
     app.add_handler(CommandHandler("setlimit", set_limit_command))
     app.add_handler(CommandHandler("resetlimit", reset_limit_command))
+    app.add_handler(CallbackQueryHandler(audio_button_callback, pattern=r"^audio:"))
+    app.add_handler(MessageHandler(filters.VIDEO | filters.Document.ALL, handle_video))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     LOGGER.info("Bot ishga tushdi.")
