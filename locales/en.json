@@ -1,0 +1,15 @@
+{
+  "welcome": "👋 Hello! Welcome to the bot.\n\n🎬 Send a video link (YouTube, TikTok, Instagram, Google, etc.).\n🎤 Or send a voice message to recognize music.",
+  "select_language": "🌍 Please select a language:",
+  "lang_changed": "✅ Language changed successfully!",
+  "downloading": "🔎 Downloading, please wait...",
+  "select_format": "🎬 **{title}**\n\n⏱ Duration: {duration}\n\nPlease select quality and size:",
+  "downloading_format": "⏳ Downloading video and sending to Telegram...",
+  "btn_download_music": "🎵 Download Music",
+  "recognizing_music": "🎵 Recognizing music...",
+  "music_found": "🎵 **Music Found!**\n\n🎤 Artist: {artist}\n🎵 Title: {title}\n💿 Album: {album}\n📅 Year: {year}\n🎯 Confidence: {confidence}%",
+  "music_not_found": "❌ Sorry, music could not be recognized.",
+  "file_too_large": "⚠️ File size is too large ({size} MB). Exceeds Telegram limit (45MB).",
+  "error_occurred": "❌ An error occurred. Please check if the link is correct and public.",
+  "stats": "📊 **Bot Statistics:**\n\n👥 Total Users: {users}\n📥 Total Downloads: {downloads}"
+}
