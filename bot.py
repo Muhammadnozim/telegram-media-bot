@@ -10,28 +10,38 @@ import yt_dlp
 load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-# Telegram Bot API cheklovi: max 50 MB
 MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "50"))
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# URL ekanligini aniqlash uchun regex
 URL_REGEX = re.compile(r'https?://[^\s]+')
 
+# YouTube va boshqa saytlar bloklamasligi uchun umumiy headers sozlamalari
+COMMON_YDL_OPTS = {
+    'quiet': True,
+    'no_warnings': True,
+    'nocheckcertificate': True,
+    'ignoreerrors': False,
+    'logtostderr': False,
+    'geo_bypass': True,
+    'headers': {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+    }
+}
+
 def search_youtube_tracks(query: str, max_results: int = 10):
-    """Matn bo'yicha YouTube'dan 10 tagacha qo'shiq qidirish (yangilangan va barqaror)"""
+    """Matn bo'yicha YouTube'dan 10 tagacha qo'shiq qidirish"""
     ydl_opts = {
+        **COMMON_YDL_OPTS,
         'format': 'bestaudio/best',
-        'quiet': True,
         'extract_flat': True,
         'skip_download': True,
-        'default_search': 'ytsearch10',
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
-            # Agar ytsearch10 ishlamasa, ytmusicsearch orqali qayta urinadi
             info = ydl.extract_info(f"ytsearch{max_results}:{query}", download=False)
             entries = info.get('entries', []) if info else []
             
@@ -57,7 +67,7 @@ def search_youtube_tracks(query: str, max_results: int = 10):
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Xush kelibsiz!\n\n"
-        "1. **Istalgan saytdan video yuklash:** Video havolasini (Instagram, TikTok, YouTube, Google va b.) yuboring.\n"
+        "1. **Istalgan saytdan video yuklash:** Video havolasini (Instagram, TikTok, YouTube va b.) yuboring.\n"
         "2. **Musiqa qidirish:** Qo'shiq yoki artist nomini yozing."
     )
 
@@ -67,17 +77,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not text:
         return
 
-    # 1. AGAR HAVOLA (LINK) YUBORILSA — Istalgan saytdan videoni yuklash
+    # 1. AGAR HAVOLA (LINK) YUBORILSA
     if URL_REGEX.search(text):
         url = URL_REGEX.search(text).group(0)
         msg = await update.message.reply_text("🎬 Video tahlil qilinmoqda va yuklanmoqda...")
 
-        # universal yt-dlp sozlamalari (istalgan sayt uchun)
         ydl_opts = {
-            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            **COMMON_YDL_OPTS,
+            'format': 'bestvideo[filesize<=45M][ext=mp4]+bestaudio/best[filesize<=45M]/best',
             'outtmpl': 'downloads/%(id)s.%(ext)s',
-            'quiet': True,
-            'no_warnings': True,
         }
 
         try:
@@ -90,20 +98,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             filename, video_id, web_url = await loop.run_in_executor(None, download_any_video)
 
-            # Fayl hajmini tekshirish (Telegram Bot API 50 MB limiti)
+            if not os.path.exists(filename):
+                # Ba'zida kengaytma o'zgarishi mumkin
+                base_path = os.path.splitext(filename)[0]
+                for ext in ['.mp4', '.mkv', '.webm']:
+                    if os.path.exists(base_path + ext):
+                        filename = base_path + ext
+                        break
+
             file_size_mb = os.path.getsize(filename) / (1024 * 1024)
 
             if file_size_mb > MAX_FILE_SIZE_MB:
                 await msg.edit_text(
                     f"⚠️ **Fayl hajmi juda katta ({file_size_mb:.1f} MB)!**\n\n"
-                    f"Telegram botlar rasman ko'pida 50 MB fayl yubora oladi. "
-                    f"Iltimos, pastroq sifatli havola yuboring yoki faqat audiosini yuklang."
+                    f"Telegram botlar rasman ko'pida 50 MB fayl yubora oladi."
                 )
                 if os.path.exists(filename):
                     os.remove(filename)
                 return
 
-            # Musiqasini ajratib olish tugmasi
             context.user_data[f"url_{video_id}"] = web_url
             keyboard = [[InlineKeyboardButton("🎵 Musiqasini yuklash (MP3)", callback_data=f"dl_audio:{video_id}")]]
             reply_markup = InlineKeyboardMarkup(keyboard)
@@ -117,10 +130,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         except Exception as e:
             logger.error(f"Video yuklashda xatolik: {e}")
-            await msg.edit_text("❌ Ushbu saytdan videoni yuklab bo'lmadi yoki havola xato.")
+            await msg.edit_text("❌ Videoni yuklab bo'lmadi. Havola noto'g'ri yoki fayl juda katta.")
         return
 
-    # 2. AGAR SHUNCHAKI MATN YOZILSA — VKM bot kabi 10 ta musiqa chiqarish
+    # 2. AGAR SHUNCHAKI MATN YOZILSA — Qidiruv
     msg = await update.message.reply_text("🔍 Musiqa qidirilmoqda...")
     loop = asyncio.get_event_loop()
     results = await loop.run_in_executor(None, search_youtube_tracks, text, 10)
@@ -159,22 +172,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         video_id = data.split(":")[1]
         video_url = context.user_data.get('search_results', {}).get(video_id) or f"https://www.youtube.com/watch?v={video_id}"
 
-        await query.message.reply_text("🎧 Audio yuklanmoqda, kuting...")
-        await download_and_send_audio(query.message, video_url)
+        msg = await query.message.reply_text("🎧 Audio yuklanmoqda, kuting...")
+        await download_and_send_audio(query.message, msg, video_url)
 
     elif data.startswith("dl_audio:"):
         video_id = data.split(":")[1]
         video_url = context.user_data.get(f"url_{video_id}") or f"https://www.youtube.com/watch?v={video_id}"
 
-        await query.message.reply_text("🎧 Musiqa ajratib olinmoqda...")
-        await download_and_send_audio(query.message, video_url)
+        msg = await query.message.reply_text("🎧 Musiqa ajratib olinmoqda...")
+        await download_and_send_audio(query.message, msg, video_url)
 
-async def download_and_send_audio(message, url: str):
+async def download_and_send_audio(message, status_msg, url: str):
     ydl_opts = {
+        **COMMON_YDL_OPTS,
         'format': 'bestaudio/best',
         'outtmpl': 'downloads/%(id)s.%(ext)s',
-        'quiet': True,
-        'no_warnings': True,
     }
 
     try:
@@ -187,12 +199,36 @@ async def download_and_send_audio(message, url: str):
 
         audio_file, title, uploader = await loop.run_in_executor(None, extract)
 
+        if not os.path.exists(audio_file):
+            base_path = os.path.splitext(audio_file)[0]
+            for ext in ['.webm', '.m4a', '.mp3', '.opus']:
+                if os.path.exists(base_path + ext):
+                    audio_file = base_path + ext
+                    break
+
         with open(audio_file, 'rb') as audio:
             await message.reply_audio(audio=audio, title=title, performer=uploader)
 
+        await status_msg.delete()
         if os.path.exists(audio_file):
             os.remove(audio_file)
 
     except Exception as e:
         logger.error(f"Audio yuklashda xatolik: {e}")
-        await message.reply_text("❌ Audioni yuklab bo'lmadi.")
+        await status_msg.edit_text("❌ Audioni yuklab bo'lmadi.")
+
+def main():
+    if not os.path.exists("downloads"):
+        os.makedirs("downloads")
+
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CallbackQueryHandler(handle_callback))
+
+    logger.info("Bot ishga tushdi...")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
