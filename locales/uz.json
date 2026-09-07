@@ -1,0 +1,15 @@
+{
+  "welcome": "👋 Salom! Botimizga xush kelibsiz.\n\n🎬 Video yuklash uchun havola yuboring (YouTube, TikTok, Instagram, Google va boshqalar).\n🎤 Yoki musiqani aniqlash uchun ovozli xabar (Voice) yuboring.",
+  "select_language": "🌍 Iltimos, tilni tanlang / Please select a language:",
+  "lang_changed": "✅ Til muvaffaqiyatli o'zgartirildi!",
+  "downloading": "🔎 Yuklanmoqda, iltimos kuting...",
+  "select_format": "🎬 **{title}**\n\n⏱ Davomiyligi: {duration}\n\nIltimos, kerakli sifat va hajmni tanlang:",
+  "downloading_format": "⏳ Video yuklab olinmoqda va Telegramga yuborilmoqda...",
+  "btn_download_music": "🎵 Musiqasini yuklash",
+  "recognizing_music": "🎵 Musiqa aniqlanmoqda...",
+  "music_found": "🎵 **Musiqa topildi!**\n\n🎤 Artist: {artist}\n🎵 Nomi: {title}\n💿 Albom: {album}\n📅 Yil: {year}\n🎯 Aniqlik: {confidence}%",
+  "music_not_found": "❌ Afsuski, musiqani aniqlay olmadim.",
+  "file_too_large": "⚠️ Fayl hajmi juda katta ({size} MB). Telegram limitidan (45MB) oshganligi sababli yuklab bo'lmadi.",
+  "error_occurred": "❌ Xatolik yuz berdi. Havola to'g'riligini va public ekanligini tekshiring.",
+  "stats": "📊 **Bot Statistikasi:**\n\n👥 Jami foydalanuvchilar: {users}\n📥 Jami yuklashlar: {downloads}"
+}
