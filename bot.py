@@ -990,3 +990,200 @@ if __name__ == "__main__":
         except Conflict:
             LOGGER.warning("Telegram polling conflict. 20 soniyadan keyin qayta uriniladi.")
             time.sleep(20)
+import os
+import re
+import logging
+import asyncio
+from dotenv import load_dotenv
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+import yt_dlp
+
+load_dotenv()
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "50"))
+
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# URL ekanligini aniqlash uchun regex
+URL_REGEX = re.compile(r'https?://[^\s]+')
+
+def search_youtube_tracks(query: str, max_results: int = 10):
+    """Matn bo'yicha YouTube'dan 10 tagacha qo'shiq qidirish"""
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'quiet': True,
+        'extract_flat': True,
+        'default_search': f'ytsearch{max_results}',
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        try:
+            info = ydl.extract_info(query, download=False)
+            entries = info.get('entries', [])
+            results = []
+            for entry in entries:
+                if entry:
+                    results.append({
+                        'id': entry.get('id'),
+                        'title': entry.get('title', 'Noma\'lum qo\'shiq'),
+                        'uploader': entry.get('uploader', 'Noma\'lum artist'),
+                        'duration': entry.get('duration', 0),
+                        'url': f"https://www.youtube.com/watch?v={entry.get('id')}"
+                    })
+            return results
+        except Exception as e:
+            logger.error(f"Qidiruvda xatolik: {e}")
+            return []
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Xush kelibsiz!\n\n"
+        "1. Qo'shiq yoki artist nomini yozing — 10 tagacha natija va tugmalar beraman.\n"
+        "2. Video havolasini yuborsangiz — videoni yuklab beraman va tagida musiqasini yuklash tugmasi bo'ladi."
+    )
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+
+    # 1. Agar foydalanuvchi LINK yuborgan bo'lsa
+    if URL_REGEX.search(text):
+        url = URL_REGEX.search(text).group(0)
+        msg = await update.message.reply_text("🎬 Video yuklanmoqda, kuting...")
+        
+        ydl_opts = {
+            'format': 'best[filesize<=50M]/best',
+            'outtmpl': 'downloads/%(id)s.%(ext)s',
+            'quiet': True
+        }
+        
+        try:
+            loop = asyncio.get_event_loop()
+            def download_video():
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    filename = ydl.prepare_filename(info)
+                    return filename, info.get('id')
+
+            filename, video_id = await loop.run_in_executor(None, download_video)
+            
+            # Musiqasini yuklash uchun tugma
+            keyboard = [[InlineKeyboardButton("🎵 Musiqasini yuklash", callback_data=f"dl_audio:{video_id}")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            with open(filename, 'rb') as video_file:
+                await update.message.reply_video(video=video_file, reply_markup=reply_markup)
+            
+            await msg.delete()
+            if os.path.exists(filename):
+                os.remove(filename)
+                
+        except Exception as e:
+            logger.error(f"Video yuklashda xatolik: {e}")
+            await msg.edit_text("❌ Videoni yuklab bo'lmadi yoki fayl hajmi juda katta.")
+        return
+
+    # 2. Agar foydalanuvchi MATN (Artist / Qo'shiq nomi) yozgan bo'lsa
+    msg = await update.message.reply_text("🔍 Qidirilmoqda...")
+    loop = asyncio.get_event_loop()
+    results = await loop.run_in_executor(None, search_youtube_tracks, text, 10)
+
+    if not results:
+        await msg.edit_text("❌ Hech narsa topilmadi.")
+        return
+
+    # Qidiruv natijalarini context.user_data ichida saqlaymiz
+    context.user_data['search_results'] = {res['id']: res['url'] for res in results}
+
+    response_text = f"🔍 <b>\"{text}\" bo'yicha natijalar:</b>\n\n"
+    buttons = []
+    row = []
+
+    for idx, item in enumerate(results, 1):
+        duration_min = f"{item['duration'] // 60}:{item['duration'] % 60:02d}" if item['duration'] else ""
+        response_text += f"{idx}. <b>{item['title']}</b> - {item['uploader']} [{duration_min}]\n"
+        
+        # 1 dan 10 gacha tugmalar (har qatorda 5 tadan)
+        row.append(InlineKeyboardButton(str(idx), callback_data=f"song_idx:{item['id']}"))
+        if len(row) == 5:
+            buttons.append(row)
+            row = []
+
+    if row:
+        buttons.append(row)
+
+    await msg.edit_text(response_text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data
+
+    # A) Tugma orqali tanlangan qo'shiqni yuklash (1-10)
+    if data.startswith("song_idx:"):
+        video_id = data.split(":")[1]
+        video_url = context.user_data.get('search_results', {}).get(video_id) or f"https://www.youtube.com/watch?v={video_id}"
+        
+        await query.message.reply_text("🎧 Audio yuklanmoqda, kuting...")
+        await download_and_send_audio(query.message, video_url)
+
+    # B) Video ostidagi "Musiqasini yuklash" tugmasi bosilganda
+    elif data.startswith("dl_audio:"):
+        video_id = data.split(":")[1]
+        video_url = f"https://www.youtube.com/watch?v={video_id}"
+        
+        await query.message.reply_text("🎧 Videodan audio ajratib olinmoqda...")
+        await download_and_send_audio(query.message, video_url)
+
+async def download_and_send_audio(message, url: str):
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'outtmpl': 'downloads/%(id)s.%(ext)s',
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }],
+        'quiet': True
+    }
+
+    try:
+        loop = asyncio.get_event_loop()
+        def extract():
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                filename = ydl.prepare_filename(info)
+                # MP3 kengaytmasini to'g'rilash
+                mp3_filename = os.path.splitext(filename)[0] + ".mp3"
+                return mp3_filename, info.get('title'), info.get('uploader')
+
+        mp3_file, title, uploader = await loop.run_in_executor(None, extract)
+
+        with open(mp3_file, 'rb') as audio:
+            await message.reply_audio(audio=audio, title=title, performer=uploader)
+
+        if os.path.exists(mp3_file):
+            os.remove(mp3_file)
+
+    except Exception as e:
+        logger.error(f"Audio yuklashda xatolik: {e}")
+        await message.reply_text("❌ Audioni yuklab bo'lmadi.")
+
+def main():
+    if not os.path.exists("downloads"):
+        os.makedirs("downloads")
+
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CallbackQueryHandler(handle_callback))
+
+    logger.info("Bot ishga tushdi...")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
+    
