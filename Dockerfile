@@ -13,7 +13,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# ESKI QATOR: CMD ["python", "-m", "app.main"]
-
-# YANGI QATOR:
-CMD ["python", "main.py"]
+CMD ["python", "-m", "app.main"]
