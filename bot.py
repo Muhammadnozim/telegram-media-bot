@@ -173,12 +173,8 @@ async def download_and_send_audio(message, url: str):
     ydl_opts = {
         'format': 'bestaudio/best',
         'outtmpl': 'downloads/%(id)s.%(ext)s',
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192',
-        }],
-        'quiet': True
+        'quiet': True,
+        'no_warnings': True,
     }
 
     try:
@@ -187,33 +183,16 @@ async def download_and_send_audio(message, url: str):
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 filename = ydl.prepare_filename(info)
-                mp3_filename = os.path.splitext(filename)[0] + ".mp3"
-                return mp3_filename, info.get('title'), info.get('uploader')
+                return filename, info.get('title', 'Musiqa'), info.get('uploader', 'Artist')
 
-        mp3_file, title, uploader = await loop.run_in_executor(None, extract)
+        audio_file, title, uploader = await loop.run_in_executor(None, extract)
 
-        with open(mp3_file, 'rb') as audio:
+        with open(audio_file, 'rb') as audio:
             await message.reply_audio(audio=audio, title=title, performer=uploader)
 
-        if os.path.exists(mp3_file):
-            os.remove(mp3_file)
+        if os.path.exists(audio_file):
+            os.remove(audio_file)
 
     except Exception as e:
         logger.error(f"Audio yuklashda xatolik: {e}")
         await message.reply_text("❌ Audioni yuklab bo'lmadi.")
-
-def main():
-    if not os.path.exists("downloads"):
-        os.makedirs("downloads")
-
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(CallbackQueryHandler(handle_callback))
-
-    logger.info("Bot ishga tushdi...")
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()
