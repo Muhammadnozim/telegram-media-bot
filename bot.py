@@ -20,17 +20,25 @@ logger = logging.getLogger(__name__)
 URL_REGEX = re.compile(r'https?://[^\s]+')
 
 def search_youtube_tracks(query: str, max_results: int = 10):
-    """Matn bo'yicha YouTube'dan 10 tagacha qo'shiq qidirish"""
+    """Matn bo'yicha YouTube'dan 10 tagacha qo'shiq qidirish (yangilangan va barqaror)"""
     ydl_opts = {
         'format': 'bestaudio/best',
         'quiet': True,
         'extract_flat': True,
-        'default_search': f'ytsearch{max_results}',
+        'skip_download': True,
+        'default_search': 'ytsearch10',
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
-            info = ydl.extract_info(query, download=False)
-            entries = info.get('entries', [])
+            # Agar ytsearch10 ishlamasa, ytmusicsearch orqali qayta urinadi
+            info = ydl.extract_info(f"ytsearch{max_results}:{query}", download=False)
+            entries = info.get('entries', []) if info else []
+            
+            if not entries:
+                info = ydl.extract_info(f"ytmusicsearch{max_results}:{query}", download=False)
+                entries = info.get('entries', []) if info else []
+
             results = []
             for entry in entries:
                 if entry:
